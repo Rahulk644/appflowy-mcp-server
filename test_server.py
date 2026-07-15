@@ -36,6 +36,63 @@ def test_collab_doc_state_tolerates_shapes():
         b({"weird": {"nope": 1}})
 
 
+def test_add_blocks_batch_insert():
+    # add_blocks folds a whole Markdown checklist into a card in one pass; verify the
+    # block-tree inserter lands every block by rendering the doc back to Markdown.
+    from pycrdt import Array, Doc, Map
+
+    doc = Doc()
+    root = doc.get("data", type=Map)
+    with doc.transaction():
+        root["document"] = Map(
+            {
+                "blocks": Map(
+                    {"page": Map({"ty": "page", "data": "{}", "children": "pc"})}
+                ),
+                "meta": Map(
+                    {"children_map": Map({"pc": Array([])}), "text_map": Map()}
+                ),
+                "page_id": "page",
+            }
+        )
+        d = root["document"]
+        bmap, cmap, tmap = d["blocks"], d["meta"]["children_map"], d["meta"]["text_map"]
+        specs = server._md_to_blocks(
+            "## Plan\n- [ ] first item\n- [ ] **bold** second\n\nplain note"
+        )
+        for spec in specs:
+            cmap["pc"].append(server._insert_pd_block(bmap, cmap, tmap, spec, "page"))
+    md = server._doc_to_markdown(d)
+    assert "## Plan" in md
+    assert "- [ ] first item" in md
+    assert "- [ ] **bold** second" in md
+    assert "plain note" in md
+    assert len(list(cmap["pc"])) == 4  # heading + 2 todos + paragraph, one fold
+
+
+def test_set_text_utf8_offsets_with_emoji():
+    # pycrdt Text indexes by UTF-8 byte; a leading emoji (4 bytes) must not drift the
+    # format range, or links/bold after it land on the wrong characters.
+    from pycrdt import Doc, Text
+
+    d = Doc()
+    t = d.get("t", type=Text)
+    with d.transaction():
+        server._set_text(
+            t,
+            [
+                {"insert": "🔗 see "},
+                {"insert": "PREP-380", "attributes": {"href": "http://x"}},
+                {"insert": " now"},
+            ],
+        )
+    assert t.diff() == [
+        ("🔗 see ", None),
+        ("PREP-380", {"href": "http://x"}),
+        (" now", None),
+    ]
+
+
 def test_workspace_guard_blocks_other_workspaces():
     server._require_workspace("ws-allowed")  # allowed -> no raise
     with pytest.raises(ValueError):

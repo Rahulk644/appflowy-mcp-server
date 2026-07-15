@@ -1029,7 +1029,10 @@ def _md_inline_to_delta(text: str) -> list:
 
 def _set_text(text_obj, delta) -> None:
     """Overwrite a yjs Text from a delta: plain content, then inline formatting ranges
-    (bold/italic/strikethrough/code/href) via Text.format(start, stop)."""
+    (bold/italic/strikethrough/code/href) via Text.format(start, stop). Offsets are in
+    UTF-8 BYTES — pycrdt/yrs indexes Text by byte, so a multi-byte char (an emoji is 4
+    bytes) must advance the position by its byte length or the format range drifts past
+    it (e.g. a leading emoji would mis-place every link on the line)."""
     if len(text_obj) > 0:
         del text_obj[0 : len(text_obj)]
     plain = "".join(op["insert"] for op in delta)
@@ -1037,7 +1040,7 @@ def _set_text(text_obj, delta) -> None:
         text_obj.insert(0, plain)
     pos = 0
     for op in delta:
-        n = len(op["insert"])
+        n = len(op["insert"].encode("utf-8"))
         attrs = op.get("attributes")
         if attrs and n:
             text_obj.format(pos, pos + n, attrs)
@@ -1567,6 +1570,78 @@ def add_block(
         cmap[parent_children_key].append(bid)
     _collab_web_update(workspace_id, page_id, doc, sv, 0)
     return bid
+
+
+def _insert_pd_block(bmap, cmap, tmap, spec, parent_id) -> str:
+    """Insert one page_data block dict (from _md_to_blocks) into a document's collab
+    maps, recursively for its children; return the new block id. The inline text
+    (data['delta']) moves to the text_map; the rest of data stays on the block. Callers
+    append the returned id to the parent's children array. Must run inside a doc
+    transaction."""
+    bid, ckey = _nid(), _nid()
+    data = dict(spec.get("data") or {})
+    delta = data.pop("delta", None)
+    block = {
+        "id": bid,
+        "ty": spec["type"],
+        "parent": parent_id,
+        "children": ckey,
+        "data": json.dumps(data),
+    }
+    cmap[ckey] = Array([])
+    if delta is not None:
+        ext = _nid()
+        block["external_id"] = ext
+        block["external_type"] = "text"
+        tmap[ext] = Text("")
+        _set_text(tmap[ext], delta)
+    bmap[bid] = Map(block)
+    for child in spec.get("children") or []:
+        cmap[ckey].append(_insert_pd_block(bmap, cmap, tmap, child, bid))
+    return bid
+
+
+@mcp.tool(annotations=_WRITE)
+def add_blocks(
+    workspace_id: str,
+    page_id: str,
+    markdown: str = "",
+    blocks: str = "",
+    parent_block_id: str = "",
+) -> str:
+    """Batch-add MANY blocks to a document or card body in ONE collab round-trip — the
+    efficient way to fold a whole checklist or notes section onto a card. Prefer this
+    over calling add_block N times (that is N fetch-mutate-post cycles; this is one).
+    `markdown`: standard Markdown (headings; nested bulleted / numbered / `- [ ]` task
+    lists; quotes; `> [!NOTE]` callouts; fenced code; dividers; images; inline
+    bold / italic / code / strike / links) rendered into real blocks. `blocks`: advanced
+    — a JSON array of page_data block dicts. Pass exactly one of markdown / blocks.
+    page_id = a document view id OR a database row id (auto-resolved to the card's body,
+    so this adds sub-tasks to a Kanban card). Appends to the end of the page (or of
+    parent_block_id). Returns the new block ids, comma-separated."""
+    _require_workspace(workspace_id)
+    if markdown:
+        specs = _md_to_blocks(markdown)
+    elif blocks:
+        specs = json.loads(blocks)
+    else:
+        raise ValueError("add_blocks: provide markdown= or blocks=")
+    if not specs:
+        return ""
+    doc, page_id, d = _open_document(workspace_id, page_id)
+    bmap, meta = d["blocks"], d["meta"]
+    cmap, tmap = meta["children_map"], meta["text_map"]
+    parent = parent_block_id or d["page_id"]
+    parent_ckey = bmap[parent]["children"]
+    sv = doc.get_state()
+    ids = []
+    with doc.transaction():
+        for spec in specs:
+            bid = _insert_pd_block(bmap, cmap, tmap, spec, parent)
+            cmap[parent_ckey].append(bid)
+            ids.append(bid)
+    _collab_web_update(workspace_id, page_id, doc, sv, 0)
+    return ",".join(ids)
 
 
 @mcp.tool(annotations=_WRITE)
