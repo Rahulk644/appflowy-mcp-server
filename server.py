@@ -361,6 +361,40 @@ def _post(path: str, body: dict):
 # collab_type: 0=Document, 1=Database, 5=DatabaseRow.
 
 
+def _collab_doc_state(payload) -> bytes:
+    """Extract the yrs `doc_state` bytes from AppFlowy's collab GET response.
+
+    AppFlowy Cloud has changed this response shape across releases, so be tolerant:
+    the body may or may not be wrapped in an `AppResponse` `{code,message,data}`
+    envelope, the encoded collab may sit under `encode_collab`/`encoded_collab` or at
+    the top level, and `doc_state` is a byte array (list[int]) in older builds or a
+    base64 string in newer ones. If none of the known shapes match, fail loudly with
+    the actual keys — an opaque `KeyError: 'data'` is what broke us, so make the next
+    shape change a five-second fix instead.
+    """
+    body = payload.get("data", payload) if isinstance(payload, dict) else payload
+    node = body
+    if isinstance(node, dict):
+        for key in ("encode_collab", "encoded_collab", "encode_collab_v1", "collab"):
+            if isinstance(node.get(key), dict):
+                node = node[key]
+                break
+    ds = node.get("doc_state") if isinstance(node, dict) else None
+    if ds is None and isinstance(body, dict):
+        ds = body.get("doc_state")
+    if ds is None:
+        shape = (
+            list(payload.keys())
+            if isinstance(payload, dict)
+            else type(payload).__name__
+        )
+        raise RuntimeError(
+            f"AppFlowy collab response has no doc_state (response keys={shape}); "
+            "the collab endpoint shape changed — update _collab_doc_state()."
+        )
+    return base64.b64decode(ds) if isinstance(ds, str) else bytes(ds)
+
+
 def _collab_doc(workspace_id: str, object_id: str, collab_type: int) -> Doc:
     """Fetch a collab object and load it into a pycrdt Doc."""
     res = _api_call(
@@ -369,7 +403,7 @@ def _collab_doc(workspace_id: str, object_id: str, collab_type: int) -> Doc:
         params={"collab_type": collab_type},
     )
     doc = Doc()
-    doc.apply_update(bytes(res.json()["data"]["doc_state"]))
+    doc.apply_update(_collab_doc_state(res.json()))
     return doc
 
 
@@ -398,14 +432,28 @@ def _row_document_id(row_id: str) -> str:
     return str(uuid.uuid5(uuid.UUID(row_id), "document_id"))
 
 
+# AppFlowy CollabType enum: Document=0, Database=1, DatabaseRow=4, UserAwareness=5.
+# A database ROW collab is type 4. Older AppFlowy ignored collab_type and keyed on the
+# object_id, so the server's earlier `5` happened to work; newer AppFlowy enforces the
+# enum and rejects the wrong type with `Record ... not active`.
+_ROW_COLLAB = 4
+
+
 def _open_document(workspace_id: str, page_id: str):
     """Load a document collab for block editing. `page_id` may be the document's own
     view id OR a database row id — a row id is transparently resolved to the row's
     body document (so agents can edit a Board card's checklist by its row id).
     Returns (doc, object_id, document_map); pass object_id back to _collab_web_update."""
-    doc = _collab_doc(workspace_id, page_id, 0)
-    root = doc.get("data", type=Map)
-    if "document" not in root:
+    root = None
+    try:
+        doc = _collab_doc(workspace_id, page_id, 0)
+        root = doc.get("data", type=Map)
+    except RuntimeError:
+        # `page_id` is a database row id, not a Document collab. AppFlowy rejects a row
+        # id fetched as collab_type 0 ("Record ... not active") instead of returning the
+        # row collab, so fall through and resolve to the row's hidden body document.
+        pass
+    if root is None or "document" not in root:
         page_id = _row_document_id(page_id)
         doc = _collab_doc(workspace_id, page_id, 0)
         root = doc.get("data", type=Map)
@@ -1397,7 +1445,7 @@ def update_row_cells(
     ftypes = None  # field types for NEW cells — loaded once, only if needed
     last = "no attempt made"
     for attempt in range(_CELL_WRITE_RETRIES):
-        doc = _collab_doc(workspace_id, row_id, 5)
+        doc = _collab_doc(workspace_id, row_id, _ROW_COLLAB)
         row_cells = doc.get("data", type=Map)["data"]["cells"]
         if ftypes is None and any(fid not in row_cells for fid in updates):
             ftypes = _field_types(workspace_id, database_id)
@@ -1418,10 +1466,10 @@ def update_row_cells(
                         }
                     )
         try:
-            _collab_web_update(workspace_id, row_id, doc, sv, 5)
-            after = _collab_doc(workspace_id, row_id, 5).get("data", type=Map)["data"][
-                "cells"
-            ]
+            _collab_web_update(workspace_id, row_id, doc, sv, _ROW_COLLAB)
+            after = _collab_doc(workspace_id, row_id, _ROW_COLLAB).get(
+                "data", type=Map
+            )["data"]["cells"]
             if confirmed(after):
                 return row_id
             last = "cells did not reflect the write on read-back"
@@ -1460,7 +1508,11 @@ def delete_row(workspace_id: str, database_id: str, row_id: str) -> str:
         _api_call(
             "DELETE",
             f"/api/workspace/{workspace_id}/collab/{row_id}",
-            json={"object_id": row_id, "workspace_id": workspace_id, "collab_type": 5},
+            json={
+                "object_id": row_id,
+                "workspace_id": workspace_id,
+                "collab_type": _ROW_COLLAB,
+            },
         )
     except RuntimeError:
         pass

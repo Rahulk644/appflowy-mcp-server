@@ -19,6 +19,23 @@ def test_agent_guide_resource():
     assert "AppFlowy Agent Guide" in guide and "Coverage" in guide
 
 
+def test_collab_doc_state_tolerates_shapes():
+    import base64
+
+    b = server._collab_doc_state
+    # old envelope: {"data": {"doc_state": [ints]}}
+    assert b({"data": {"doc_state": [1, 2, 3]}}) == bytes([1, 2, 3])
+    # newer: encoded collab nested, envelope stripped
+    assert b({"encode_collab": {"doc_state": [4, 5]}}) == bytes([4, 5])
+    # newer, still wrapped: envelope + nested encode_collab
+    assert b({"data": {"encode_collab": {"doc_state": [6]}}}) == bytes([6])
+    # base64-string doc_state (newer builds)
+    assert b({"data": {"doc_state": base64.b64encode(b"yjs").decode()}}) == b"yjs"
+    # unknown shape -> loud error that names the keys (never a bare KeyError)
+    with pytest.raises(RuntimeError, match="doc_state"):
+        b({"weird": {"nope": 1}})
+
+
 def test_workspace_guard_blocks_other_workspaces():
     server._require_workspace("ws-allowed")  # allowed -> no raise
     with pytest.raises(ValueError):
