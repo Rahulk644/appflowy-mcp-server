@@ -20,6 +20,35 @@ def test_agent_guide_resource():
     assert "AppFlowy Agent Guide" in guide and "Coverage" in guide
 
 
+def test_dollar_amounts_survive_markdown_parsing():
+    # Regression: with dollarmath's defaults, a sentence with two dollar AMOUNTS had
+    # everything between them swallowed into a math node —
+    #   "ARR hit $560k this quarter, up from $380k last year."
+    #     -> "ARR hit 380k last year."
+    # Silent, unrecoverable loss of figures in ordinary prose.
+    money = "ARR hit $560k this quarter, up from $380k last year."
+    blocks = server._md_to_blocks(money)
+    rendered = " ".join(
+        seg.get("insert", "")
+        for b in blocks
+        for seg in (b.get("data", {}) or {}).get("delta", [])
+    )
+    assert "$560k" in rendered
+    assert "$380k" in rendered
+    assert "this quarter, up from" in rendered  # the text between them survives
+
+
+def test_inline_math_still_parses():
+    # The money fix must not cost us real math: a TeX expression with no digit or
+    # space against the delimiter is still math, and $$...$$ blocks are untouched.
+    toks = server._md_parser.parse("Euler: $e^{i\\pi}+1=0$ done")
+    kinds = {c.type for t in toks if t.type == "inline" for c in (t.children or [])}
+    assert "math_inline" in kinds
+
+    blocks = server._md_to_blocks("$$\nx^2 + y^2 = z^2\n$$")
+    assert any(b.get("type") == "math_equation" for b in blocks)
+
+
 def test_collab_doc_state_tolerates_shapes():
     import base64
 

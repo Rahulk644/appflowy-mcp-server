@@ -708,8 +708,18 @@ def list_databases(workspace_id: str) -> list:
 # ponytail: MVP palette — callouts/toggles/columns and tables-as-blocks are
 # roadmap (a GFM table degrades to its plaintext for now).
 
+# dollarmath is configured with allow_digits/allow_space OFF, which is a data-loss
+# fix, not a preference. With the defaults, any prose containing two dollar AMOUNTS
+# has everything between them swallowed into a math node:
+#   "ARR hit $560k this quarter, up from $380k last year."
+#     -> "ARR hit 380k last year."          <- figures and words silently gone
+# Money in notes is far more common than inline TeX, and disallowing a digit or a
+# space adjacent to the delimiter kills the money case while keeping real math:
+# "$e^{i\pi}+1=0$" still parses, and $$...$$ block math is untouched.
 _md_parser = (
-    MarkdownIt("commonmark").enable(["table", "strikethrough"]).use(dollarmath_plugin)
+    MarkdownIt("commonmark")
+    .enable(["table", "strikethrough"])
+    .use(dollarmath_plugin, allow_digits=False, allow_space=False)
 )
 
 # GFM alert types (> [!NOTE]) <-> AppFlowy callout icons, for round-tripping callouts.
