@@ -24,7 +24,9 @@ Security model (see README/SECURITY):
 import base64
 import hmac
 import json
+import logging
 import os
+import re
 import secrets
 import string
 import time
@@ -1810,6 +1812,35 @@ async def lifespan(_: FastAPI):
     async with mcp.session_manager.run():
         yield
 
+
+class _RedactTokenFilter(logging.Filter):
+    """Keep `?token=` out of the access log.
+
+    Clients that cannot set an Authorization header (the Claude connector dialog
+    only takes a URL) must pass the shared secret as a query parameter. Uvicorn's
+    access logger writes the full request line, so without this every such request
+    prints a working credential to stdout — where `docker logs` hands it to anyone
+    who can read them, and log shippers happily archive it forever. Observed in the
+    wild, not hypothetical.
+
+    Belt-and-braces: prefer the Authorization header wherever the client supports
+    it. Redaction limits the blast radius; it does not make a URL secret.
+    """
+
+    _RE = re.compile(r"(token=)[^&\s\"']+")
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(
+                self._RE.sub(r"\1[REDACTED]", a) if isinstance(a, str) else a
+                for a in record.args
+            )
+        if isinstance(record.msg, str):
+            record.msg = self._RE.sub(r"\1[REDACTED]", record.msg)
+        return True
+
+
+logging.getLogger("uvicorn.access").addFilter(_RedactTokenFilter())
 
 app = FastAPI(title="AppFlowy MCP Server", lifespan=lifespan)
 
