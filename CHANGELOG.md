@@ -7,6 +7,37 @@ All notable changes are documented here. The format loosely follows
 ## [Unreleased]
 
 ### Fixed
+- **Pinned `mcp>=1.13,<2`.** `mcp` 2.0.0 removed `mcp.server.fastmcp`, which this
+  server is built on, so an unpinned install resolved 2.0.0 and died at import with
+  `ModuleNotFoundError: No module named 'mcp.server.fastmcp'` — breaking every fresh
+  clone and install, and CI along with them. `pyproject.toml` was also out of sync
+  with `requirements.txt`: `mcp`/`pycrdt` unpinned there, and `markdown-it-py` /
+  `mdit-py-plugins` missing entirely despite being imported at module scope.
+- **`append_blocks` silently discarded content given a database row id**
+  ([#1] neighbourhood). AppFlowy's REST `append-block` accepts only a real page-view;
+  handed a row id it returns success and writes nothing — precisely the call used to
+  fold a checklist onto a Kanban card. Rows are now re-routed through the collab
+  layer, matching `add_block` / `add_blocks` / `get_page_markdown`. The page-view
+  path is byte-for-byte unchanged and issues no extra request.
+- **Dollar amounts were swallowed as inline math.** With dollarmath's defaults,
+  `"ARR hit $560k this quarter, up from $380k last year."` parsed to
+  `"ARR hit 380k last year."` — both figures and the intervening words silently gone.
+  Markdown is now parsed with `allow_digits=False, allow_space=False`, which keeps
+  real math (`$e^{i\pi}+1=0$`, `$$…$$`) working.
+- **Ruff pinned in CI.** An unpinned linter adopts new rules on release, so a build
+  that passed yesterday fails today with no code change. Pinned, and the 19 findings
+  from ruff 0.16.1 cleared (12 mechanical `dict.get()` rewrites — verified safe
+  against pycrdt `Map`, whose `.get()` matches `dict.get()` — and 4 deliberate
+  resilience fallbacks documented with `# noqa` and a reason).
+
+### Security
+- **`?token=` is redacted from the access log.** Clients that cannot set an
+  `Authorization` header pass the shared secret in the URL, and uvicorn logged the
+  full request line — printing a working credential to stdout on every request,
+  where `docker logs` exposes it and log shippers archive it. Observed in a deployed
+  sibling server, not hypothetical. Prefer the header where the client supports it;
+  redaction limits blast radius, it does not make a URL secret.
+
 - **Pinned `pycrdt==0.13.0`.** 0.14.1 regressed collab decoding — it raised
   `Cannot decode update: while reading, an unexpected value was found` on some
   AppFlowy *database* collabs, which silently broke every Tier-2 structural op
