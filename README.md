@@ -146,6 +146,18 @@ CI runs lint, format-check, and tests on every push/PR.
 
 ## 🩺 Troubleshooting
 
+**`ModuleNotFoundError: No module named 'mcp.server.fastmcp'`** — **`mcp` 2.0.0 removed
+the `fastmcp` module** this server is built on. An unpinned install resolves 2.0.0 and
+dies at import. `requirements.txt` pins **`mcp>=1.13,<2`** — reinstall with
+`pip install -r requirements.txt` rather than `pip install -U mcp`. Porting to the 2.x
+server API is tracked separately.
+
+**`KeyError: 'data'` on a database row or Board/Grid page** — fixed. AppFlowy Cloud
+moved the collab response shape (envelope or not, `encode_collab`/`encoded_collab`/top
+level, `doc_state` as byte array or base64) and began enforcing `CollabType` (a database
+row is type **4**, not 5). Update to the latest `main`. If a *new* shape appears, the
+error now names the actual keys instead of raising a bare `KeyError`.
+
 **`ValueError: Cannot decode update: while reading, an unexpected value was found`** — a **pycrdt 0.14.1 regression** fails to decode some AppFlowy *database* collabs, which breaks every collab-layer structural op (`delete_row`, field/option edits) on the affected database while row cell-writes keep working. `requirements.txt` pins **`pycrdt==0.13.0`** to avoid it — don't unpin past `0.13` until it's fixed upstream.
 
 **A write looks like it didn't apply** — `get_database_row_details` reads a materialized view that can lag the live collab by minutes; the write is usually fine. `update_row_cells` confirms its own write against the collab (with retry) before returning, so its success result is trustworthy.
@@ -155,6 +167,29 @@ CI runs lint, format-check, and tests on every push/PR.
 [`LucasXu0/appflowy_mcp`](https://github.com/LucasXu0/appflowy_mcp) covers pages/folders/trash/favorites. This server adds **database write-back, full row/block edit & delete via the collab layer, workspace scoping, and OAuth** — aimed at agents that *finish* work on a board, not just read it.
 
 ## 🗺️ Roadmap
+
+### Next: v2.0.0 — API surface redesign (breaking)
+
+The tool surface grew one-tool-per-endpoint to **35 tools**. That is the wrong shape: a
+large surface makes an agent load and choose among dozens of schemas on every call, and
+bare names like `search` collide with any other MCP loaded alongside this one.
+
+v2 consolidates to **12 command-multiplexed verbs**, all `appflowy_`-prefixed, converts
+the whole HTTP layer to **async**, and adds Pydantic input validation, pagination, and
+`response_format`. Coverage does not shrink — writes multiplex behind a `command` enum
+and `appflowy_api` remains a full passthrough.
+
+It also adds three capabilities: **AI chat** (`/api/chat/*`, with RAG over page ids),
+and bulk **Markdown import/export**.
+
+**The full design contract, including verified AppFlowy Cloud endpoint research, is in
+[DESIGN-v2.md](DESIGN-v2.md).** It is the implementation brief — read it before starting
+work on v2.
+
+v2.0.0 renames every tool. The migration table will ship in this README; no aliases,
+because 35 shims alongside 12 verbs would defeat the point.
+
+### Later
 
 **Content & blocks**
 - **Richer editing** — insert-at-position and search-and-replace *by content* (no block ids), plus rich inline formatting (bold / links / color) on in-place edits.
