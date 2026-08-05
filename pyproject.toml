@@ -13,12 +13,17 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    "mcp",
+    # Keep these bounds in sync with requirements.txt — see the comments there for
+    # why mcp and pycrdt are pinned (2.0.0 dropped fastmcp; pycrdt 0.14.1 regressed
+    # collab decoding).
+    "mcp>=1.13,<2",
     "httpx",
     "python-dotenv",
     "fastapi",
     "uvicorn",
-    "pycrdt",
+    "pycrdt==0.13.0",
+    "markdown-it-py",
+    "mdit-py-plugins",
 ]
 
 [project.optional-dependencies]
