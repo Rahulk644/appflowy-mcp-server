@@ -433,6 +433,31 @@ def _row_document_id(row_id: str) -> str:
     return str(uuid.uuid5(uuid.UUID(row_id), "document_id"))
 
 
+def _is_database_row(workspace_id: str, view_id: str) -> bool:
+    """True if `view_id` addresses a database ROW rather than a page-view document.
+
+    The page-view endpoint carries `row_data` for a row and `encoded_collab` for a
+    document — the cheapest reliable discriminator (one small REST GET, rather than
+    downloading the whole collab just to see whether it decodes). Both the flat and
+    nested response shapes are accepted, since AppFlowy has moved this around before.
+
+    Never raises: this only ever *adds* a fallback path, so an unreachable or
+    unrecognised response answers False and leaves the caller's behaviour unchanged.
+    """
+    try:
+        meta = (
+            _api_call("GET", f"/api/workspace/{workspace_id}/page-view/{view_id}")
+            .json()
+            .get("data", {})
+        )
+    except Exception:  # noqa: BLE001 - a probe, never a failure mode of its own
+        return False
+    if not isinstance(meta, dict):
+        return False
+    node = meta.get("data") if isinstance(meta.get("data"), dict) else meta
+    return isinstance(node, dict) and "row_data" in node
+
+
 # AppFlowy CollabType enum: Document=0, Database=1, DatabaseRow=4, UserAwareness=5.
 # A database ROW collab is type 4. Older AppFlowy ignored collab_type and keyed on the
 # object_id, so the server's earlier `5` happened to work; newer AppFlowy enforces the
@@ -1319,7 +1344,11 @@ def append_blocks(
 
     Preferred — `markdown`: rendered into real blocks (same palette as
     create_page). Advanced — `blocks`: a JSON array of block objects
-    ({"type":...,"data":...}). Pass either markdown or blocks."""
+    ({"type":...,"data":...}). Pass either markdown or blocks.
+
+    `view_id` may also be a database ROW id: AppFlowy's REST append-block silently
+    ignores those, so rows are transparently re-routed through the collab layer to
+    the row's body document (same target as add_block / add_blocks)."""
     _require_workspace(workspace_id)
     if markdown:
         payload = _md_to_blocks(markdown)
@@ -1327,10 +1356,21 @@ def append_blocks(
         payload = json.loads(blocks)
     else:
         raise ValueError("provide `markdown` (preferred) or `blocks`")
-    return _post(
+    result = _post(
         f"/api/workspace/{workspace_id}/page-view/{view_id}/append-block",
         {"blocks": payload},
     )
+    if result:
+        return result
+    # Empty result: either a legitimately empty success, or `view_id` is a database
+    # row id. AppFlowy's append-block endpoint accepts only a real page-view — given
+    # a row it returns success and writes NOTHING, so an agent folding a checklist
+    # onto a Kanban card got a silent no-op. Only re-route once the id is CONFIRMED
+    # to be a row; the REST call provably wrote nothing in that case, so the collab
+    # append cannot duplicate content.
+    if _is_database_row(workspace_id, view_id):
+        return add_blocks(workspace_id, view_id, markdown=markdown, blocks=blocks)
+    return result
 
 
 @mcp.tool(annotations=_CREATE)

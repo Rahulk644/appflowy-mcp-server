@@ -316,6 +316,117 @@ def test_update_row_cells_raises_when_write_never_confirms(monkeypatch):
         server.update_row_cells("ws-allowed", "db", "row1", '{"F1": "new"}')
 
 
+def _mock_http(monkeypatch, handler):
+    """Point server.httpx.Client at a MockTransport and stub auth.
+
+    NOTE: `server.httpx` IS the global httpx module, so patching `.Client` here is a
+    global patch. Capture the pristine class from the *class* object rather than the
+    module attribute, or a second call in the same test would wrap the first mock
+    (and keep serving the first handler) instead of replacing it.
+    """
+    import httpx
+
+    real_client = _PRISTINE_HTTPX_CLIENT
+    monkeypatch.setattr(
+        server.httpx,
+        "Client",
+        lambda **k: real_client(transport=httpx.MockTransport(handler)),
+    )
+    monkeypatch.setattr(
+        server, "get_auth_headers", lambda: {"Authorization": "Bearer x"}
+    )
+
+
+def _pristine_httpx_client():
+    import httpx
+
+    return httpx.Client
+
+
+_PRISTINE_HTTPX_CLIENT = _pristine_httpx_client()
+
+
+def test_is_database_row_discriminates_row_from_document(monkeypatch):
+    # append_blocks routes on this: AppFlowy's page-view payload carries `row_data`
+    # for a database row and `encoded_collab` for a document.
+    import httpx
+
+    def as_row(_request):
+        return httpx.Response(200, json={"data": {"data": {"row_data": {}}}})
+
+    _mock_http(monkeypatch, as_row)
+    assert server._is_database_row("ws", "some-id") is True
+
+    def as_doc(_request):
+        return httpx.Response(200, json={"data": {"data": {"encoded_collab": "..."}}})
+
+    _mock_http(monkeypatch, as_doc)
+    assert server._is_database_row("ws", "some-id") is False
+
+    # Flat shape (AppFlowy has moved this key around across releases).
+    def as_row_flat(_request):
+        return httpx.Response(200, json={"data": {"row_data": {}}})
+
+    _mock_http(monkeypatch, as_row_flat)
+    assert server._is_database_row("ws", "some-id") is True
+
+
+def test_is_database_row_never_raises(monkeypatch):
+    # It only ever ADDS a fallback path, so an error must answer False and leave the
+    # caller's existing behaviour untouched — never turn a probe into a failure.
+    import httpx
+
+    def boom(_request):
+        return httpx.Response(500, text="upstream exploded")
+
+    _mock_http(monkeypatch, boom)
+    assert server._is_database_row("ws", "some-id") is False
+
+
+def test_append_blocks_reroutes_row_id_to_collab(monkeypatch):
+    # The bug: AppFlowy's REST append-block accepts only a real page-view. Handed a
+    # database ROW id it returns success and writes NOTHING, so folding a checklist
+    # onto a Kanban card silently lost the content.
+    calls = {}
+
+    def fake_add_blocks(ws, pid, markdown="", blocks=""):
+        calls["md"] = markdown
+        calls["page_id"] = pid
+        return "blk1"
+
+    monkeypatch.setattr(server, "_require_workspace", lambda *_: None)
+    monkeypatch.setattr(server, "_post", lambda *a, **k: "")  # the silent no-op
+    monkeypatch.setattr(server, "_is_database_row", lambda *_: True)
+    monkeypatch.setattr(server, "add_blocks", fake_add_blocks)
+
+    out = server.append_blocks("ws", "row-id", markdown="- [ ] fold me")
+    assert out == "blk1"  # delegated to the collab path
+    assert calls["md"] == "- [ ] fold me"  # content carried across intact
+    assert calls["page_id"] == "row-id"  # and aimed at the row, not the page
+
+
+def test_append_blocks_leaves_document_path_untouched(monkeypatch):
+    # Zero-regression guard: a normal page-view append must not gain an extra probe
+    # or a second write just because the row fallback exists.
+    seen = {"posts": 0, "probes": 0}
+
+    def fake_post(*_a, **_k):
+        seen["posts"] += 1
+        return "ok-block-id"
+
+    def fake_probe(*_a, **_k):
+        seen["probes"] += 1
+        return True
+
+    monkeypatch.setattr(server, "_require_workspace", lambda *_: None)
+    monkeypatch.setattr(server, "_post", fake_post)
+    monkeypatch.setattr(server, "_is_database_row", fake_probe)
+
+    assert server.append_blocks("ws", "page-id", markdown="hello") == "ok-block-id"
+    assert seen["posts"] == 1  # exactly one write
+    assert seen["probes"] == 0  # no extra round-trip on the happy path
+
+
 def test_api_call_actionable_error(monkeypatch):
     # A non-2xx from AppFlowy must surface as a specific, agent-readable message
     # (not a bare traceback), with a hint about what to fix.
