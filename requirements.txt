@@ -1,5 +1,9 @@
 fastapi
-mcp
+# Pinned: mcp 2.0.0 REMOVED `mcp.server.fastmcp`, which this server is built on —
+# an unpinned install gets 2.0.0 and dies at import with
+# "ModuleNotFoundError: No module named 'mcp.server.fastmcp'". 1.x still ships it.
+# Porting to the 2.x server API is tracked separately; until then stay on 1.x.
+mcp>=1.13,<2
 uvicorn
 httpx
 python-dotenv
