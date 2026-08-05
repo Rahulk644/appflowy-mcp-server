@@ -16,7 +16,10 @@ jobs:
       with:
         python-version: "3.12"
     - name: Install ruff
-      run: pip install ruff
+      # Pinned deliberately: an unpinned ruff silently adopts new rules on release,
+      # so a build that passed yesterday fails today with no code change. Bump this
+      # on purpose, with the fixes in the same commit.
+      run: pip install ruff==0.16.1
     - name: Lint
       run: ruff check .
     - name: Format check
