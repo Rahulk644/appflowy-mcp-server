@@ -20,6 +20,46 @@ def test_agent_guide_resource():
     assert "AppFlowy Agent Guide" in guide and "Coverage" in guide
 
 
+def test_access_log_redacts_query_token():
+    # The ?token= link method puts a working credential in the request line, which
+    # uvicorn's access logger writes verbatim to stdout. Anything that can read
+    # `docker logs` then has full access, so the secret must never reach the log.
+    import logging
+
+    f = server._RedactTokenFilter()
+
+    rec = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        '%s - "%s %s HTTP/%s" %d',
+        None,
+        None,
+    )
+    rec.args = ("1.2.3.4:0", "POST", "/mcp/?token=supersecretvalue", "1.1", 200)
+    f.filter(rec)
+    assert "supersecretvalue" not in str(rec.args)
+    assert "token=[REDACTED]" in str(rec.args)
+
+    # Non-token args must pass through untouched.
+    assert "/mcp/" in str(rec.args) and "POST" in str(rec.args)
+
+    # Also scrubbed when the secret is baked into the message itself.
+    rec2 = logging.LogRecord(
+        "uvicorn.access",
+        logging.INFO,
+        __file__,
+        1,
+        "GET /sse?token=abc123&x=1",
+        None,
+        None,
+    )
+    f.filter(rec2)
+    assert "abc123" not in rec2.msg
+    assert "x=1" in rec2.msg  # other query params are preserved
+
+
 def test_dollar_amounts_survive_markdown_parsing():
     # Regression: with dollarmath's defaults, a sentence with two dollar AMOUNTS had
     # everything between them swallowed into a math node —
