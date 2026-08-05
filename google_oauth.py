@@ -82,7 +82,8 @@ class GoogleOAuthProvider(OAuthAuthorizationServerProvider):
                 k: RefreshToken.model_validate(v)
                 for k, v in data.get("refresh", {}).items()
             }
-        except Exception as e:  # noqa: BLE001 - a bad store must never block boot
+        except Exception as e:  # noqa: BLE001 - a corrupt/unreadable store must never
+            # take the server down; degrade to an empty store and make users re-auth.
             print(
                 f"[oauth] token store unreadable ({e}); starting empty", file=sys.stderr
             )
@@ -108,7 +109,8 @@ class GoogleOAuthProvider(OAuthAuthorizationServerProvider):
                 json.dump(data, f)
             os.chmod(tmp, 0o600)
             os.replace(tmp, self.store_path)  # atomic
-        except Exception as e:  # noqa: BLE001 - persistence must never break auth
+        except Exception as e:  # noqa: BLE001 - persistence is best-effort; a failed
+            # write (disk full, read-only mount) must not fail the request in flight.
             print(f"[oauth] could not persist token store ({e})", file=sys.stderr)
 
     async def get_client(self, client_id):

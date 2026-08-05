@@ -9,8 +9,9 @@ os.environ.setdefault("MCP_SECRET_TOKEN", "test-secret-123")
 os.environ.setdefault("ALLOWED_WORKSPACE_IDS", "ws-allowed")
 os.environ.setdefault("MCP_ALLOWED_HOSTS", "testserver")
 
-import server  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
+from fastapi.testclient import TestClient
+
+import server
 
 
 def test_agent_guide_resource():
@@ -344,8 +345,9 @@ def test_api_call_actionable_error(monkeypatch):
 def test_oauth_store_persists_across_instances(tmp_path):
     # Tokens must survive a restart: a fresh provider pointed at the same store
     # file reloads what a prior instance saved (this is what stops re-sign-in).
-    from google_oauth import GoogleOAuthProvider
     from mcp.server.auth.provider import AccessToken
+
+    from google_oauth import GoogleOAuthProvider
 
     path = str(tmp_path / "oauth.json")
     p = GoogleOAuthProvider(

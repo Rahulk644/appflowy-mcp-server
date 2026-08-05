@@ -304,7 +304,8 @@ def get_auth_headers() -> dict:
     if not _access_token or time.time() >= _token_expires_at:
         try:
             _refresh() if _refresh_token else _login()
-        except Exception:
+        except Exception:  # noqa: BLE001 - any refresh failure (expired/revoked/
+            # malformed token, transport error) is recoverable by a full re-login.
             _login()
 
     return {
@@ -484,10 +485,10 @@ def _field_types(workspace_id: str, database_id: str) -> dict:
     try:
         _, root = _open_database(workspace_id, database_id)
         fields = root["fields"]
-        return {
-            fid: int(fields[fid]["ty"]) for fid in fields.keys() if "ty" in fields[fid]
-        }
-    except Exception:
+        return {fid: int(fields[fid]["ty"]) for fid in fields if "ty" in fields[fid]}
+    except Exception:  # noqa: BLE001 - the collab read is the authoritative source but
+        # can fail for any reason (schema drift, decode error); fall back to REST, which
+        # lags for just-created fields but is better than failing the whole call.
         return {
             f["id"]: int(f.get("field_type_id", 0))
             for f in get_database_fields(workspace_id, database_id)
@@ -531,7 +532,7 @@ def _read_select(field):
         raise ValueError("field is not a SingleSelect/MultiSelect column")
     tk = str(ty)
     content = ""
-    to = field["type_option"] if "type_option" in field else None
+    to = field.get("type_option", None)
     if to is not None and tk in to and "content" in to[tk]:
         content = to[tk]["content"]
     data = json.loads(content) if content else {}
@@ -943,9 +944,9 @@ def _inline_md(delta) -> str:
 def _render_block(bid, blocks, cmap, tmap, depth):
     """Return (lines, is_list_item) for a block and its (indented) children."""
     b = blocks[bid]
-    ty = b["ty"] if "ty" in b else ""
-    data = json.loads(b["data"]) if ("data" in b and b["data"]) else {}
-    ext = b["external_id"] if "external_id" in b else None
+    ty = b.get("ty", "")
+    data = json.loads(b["data"]) if (b.get("data")) else {}
+    ext = b.get("external_id", None)
     delta = tmap[ext].diff() if (ext is not None and ext in tmap) else []
     pad = "  " * depth
 
@@ -984,7 +985,7 @@ def _render_block(bid, blocks, cmap, tmap, depth):
         else:  # paragraph, and any unknown block -> plain text (never dropped)
             lines = [text]
 
-    ck = b["children"] if "children" in b else None
+    ck = b.get("children", None)
     if ck is not None and ck in cmap:
         for c in list(cmap[ck]):
             child_lines, _ = _render_block(c, blocks, cmap, tmap, depth + 1)
@@ -997,7 +998,7 @@ def _doc_to_markdown(document) -> str:
     blocks, meta = document["blocks"], document["meta"]
     cmap, tmap = meta["children_map"], meta["text_map"]
     root = blocks[document["page_id"]]
-    ck = root["children"] if "children" in root else None
+    ck = root.get("children", None)
     if ck is None or ck not in cmap:
         return ""
     parts, prev_fam = [], None
@@ -1653,8 +1654,8 @@ def edit_block_text(workspace_id: str, page_id: str, block_id: str, text: str) -
     doc, page_id, d = _open_document(workspace_id, page_id)
     block = d["blocks"][block_id]
     tmap = d["meta"]["text_map"]
-    ext = block["external_id"] if "external_id" in block else None
-    ty = block["ty"] if "ty" in block else ""
+    ext = block.get("external_id", None)
+    ty = block.get("ty", "")
     delta = [{"insert": text}] if ty in _PLAIN_TEXT_TYS else _md_inline_to_delta(text)
     sv = doc.get_state()
     with doc.transaction():
@@ -1690,7 +1691,7 @@ def replace_text(
     hits = []
     for bid in blocks:
         b = blocks[bid]
-        ext = b["external_id"] if "external_id" in b else None
+        ext = b.get("external_id", None)
         if ext is not None and ext in tmap and find in str(tmap[ext]):
             hits.append(ext)
     if not hits:
@@ -1726,9 +1727,9 @@ def delete_block(workspace_id: str, page_id: str, block_id: str) -> str:
     if block_id not in blocks:
         raise ValueError(f"block {block_id} not found")
     block = blocks[block_id]
-    parent = block["parent"] if "parent" in block else ""
-    ext = block["external_id"] if "external_id" in block else None
-    ckey = block["children"] if "children" in block else None
+    parent = block.get("parent", "")
+    ext = block.get("external_id", None)
+    ckey = block.get("children", None)
     sv = doc.get_state()
     with doc.transaction():
         if parent and parent in blocks:
